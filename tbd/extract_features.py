@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-A minimal training script for DiT using PyTorch DDP.
+Feature extraction script for DiT using PyTorch DDP.
 """
 import torch
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
@@ -29,7 +29,7 @@ from diffusers.models import AutoencoderKL
 
 
 #################################################################################
-#                             Training Helper Functions                         #
+#                             Helper Functions                         #
 #################################################################################
 
 @torch.no_grad()
