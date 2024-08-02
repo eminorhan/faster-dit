@@ -1,0 +1,14 @@
+[[34m2024-08-02 12:45:55[0m] Experiment directory created at results/002-DiT-S-8
+[[34m2024-08-02 12:45:56[0m] DiT Parameters: 33,148,160
+[[34m2024-08-02 12:45:57[0m] Dataset contains 47,848 images (/scratch/projects/lakelab/data_frames/imagenet-1k-processed/tae_patch16_vocab64_px256/imagenet_1k_val_tae_patch16_vocab64_px256.pth)
+torch.Size([256, 256, 64]) torch.Size([256])
+Traceback (most recent call last):
+  File "/scratch/eo41/faster-dit/train.py", line 216, in <module>
+    main(args)
+  File "/scratch/eo41/faster-dit/train.py", line 155, in main
+    targets = targets.squeeze(dim=1)
+              ^^^^^^^^^^^^^^^^^^^^^^
+IndexError: Dimension out of range (expected to be in range of [-1, 0], but got 1)
+srun: error: gr068: task 0: Exited with exit code 1
+srun: Terminating StepId=49275551.0
+Done

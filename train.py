@@ -148,6 +148,8 @@ def main(args):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
+        print(samples.shape, targets.shape)
+
         # not sure if I really need the squeeze() here
         samples = samples.squeeze(dim=1)
         targets = targets.squeeze(dim=1)
@@ -204,9 +206,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_classes", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--global_seed", type=int, default=0)
+    parser.add_argument("--global_seed", type=int, default=0)    
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
+    parser.add_argument('--device', default='cuda', help='device to use for training/testing')
+
     parser.add_argument("--log_every", type=int, default=100)
-    parser.add_argument("--ckpt_every", type=int, default=50_000)
+    parser.add_argument("--ckpt_every", type=int, default=50000)
     args = parser.parse_args()
     main(args)
