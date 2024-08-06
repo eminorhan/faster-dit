@@ -4,6 +4,8 @@
 *.tar
 *.ckpt
 *.npz
+*.out
 
 # Directories
 **/__pycache__
+results/

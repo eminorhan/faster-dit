@@ -1,1 +1,1 @@
-[[34m2024-08-02 12:41:00[0m] Experiment directory created at results/000-DiT-S-8
+[[34m2024-08-02 16:45:35[0m] Experiment directory created at results/000-DiT-S-8

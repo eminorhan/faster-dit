@@ -81,6 +81,16 @@ def center_crop_arr(pil_image, image_size):
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
 
+def patchify(x):
+    """
+    input:  (B, T, C)
+    output: (B, C, H, W)
+    """
+    t = int(x.shape[1] ** 0.5)
+    x = x.permute(0, 2, 1)
+    x = x.reshape(x.shape[0], x.shape[1], t, t)
+    return x
+
 #################################################################################
 #                                  Training Loop                                #
 #################################################################################
@@ -107,7 +117,7 @@ def main(args):
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
-    model = DiT_models[args.model](input_size=latent_size, num_classes=args.num_classes)
+    model = DiT_models[args.model](num_classes=args.num_classes)
 
     # Note that parameter initialization is done within the DiT constructor
     model = model.to(device)
@@ -148,11 +158,8 @@ def main(args):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
-        print(samples.shape, targets.shape)
-
-        # not sure if I really need the squeeze() here
-        samples = samples.squeeze(dim=1)
-        targets = targets.squeeze(dim=1)
+        # reshape batch
+        samples = patchify(samples)
 
         t = torch.randint(0, diffusion.num_timesteps, (samples.shape[0],), device=device)
         model_kwargs = dict(y=targets)
@@ -209,7 +216,6 @@ if __name__ == "__main__":
     parser.add_argument("--global_seed", type=int, default=0)    
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument('--device', default='cuda', help='device to use for training/testing')
-
     parser.add_argument("--log_every", type=int, default=100)
     parser.add_argument("--ckpt_every", type=int, default=50000)
     args = parser.parse_args()
