@@ -743,9 +743,7 @@ class GaussianDiffusion:
         batch_size = x_start.shape[0]
         t = th.tensor([self.num_timesteps - 1] * batch_size, device=x_start.device)
         qt_mean, _, qt_log_variance = self.q_mean_variance(x_start, t)
-        kl_prior = normal_kl(
-            mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0
-        )
+        kl_prior = normal_kl(mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0)
         return mean_flat(kl_prior) / np.log(2.0)
 
     def calc_bpd_loop(self, model, x_start, clip_denoised=True, model_kwargs=None):

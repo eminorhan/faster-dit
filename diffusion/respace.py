@@ -14,16 +14,16 @@ def space_timesteps(num_timesteps, section_counts):
     Create a list of timesteps to use from an original diffusion process,
     given the number of timesteps we want to take from equally-sized portions
     of the original process.
-    For example, if there's 300 timesteps and the section counts are [10,15,20]
+
+    For example, if there's 300 timesteps and the section counts are [10, 15, 20]
     then the first 100 timesteps are strided to be 10 timesteps, the second 100
     are strided to be 15 timesteps, and the final 100 are strided to be 20.
     If the stride is a string starting with "ddim", then the fixed striding
     from the DDIM paper is used, and only one section is allowed.
+    
     :param num_timesteps: the number of diffusion steps in the original process to divide up.
-    :param section_counts: either a list of numbers, or a string containing comma-separated numbers, indicating the step count
-                           per section. As a special case, use "ddimN" where N
-                           is a number of steps to use the striding from the
-                           DDIM paper.
+    :param section_counts: either a list of numbers, or a string containing comma-separated numbers, indicating the step count per section. 
+                           As a special case, use "ddimN" where N is a number of steps to use the striding from the DDIM paper.
     :return: a set of diffusion steps from the original process to use.
     """
     if isinstance(section_counts, str):

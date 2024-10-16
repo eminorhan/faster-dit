@@ -126,18 +126,20 @@ def main(args):
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
+    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    scaler = torch.amp.GradScaler('cuda')
 
     # Setup data:
     train_data = torch.load(args.train_data_path, map_location='cpu')
     n_train = train_data['targets'].shape[0]
     logger.info(f"Dataset contains {n_train:,} images ({args.train_data_path})")
 
-    # Prepare models for training:
-    update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
-    model.train()  # important! This enables embedding dropout for classifier-free guidance
-    ema.eval()  # EMA model should always be in eval mode
+    # Prepare models for training
+    # TODO: do I need to wrap epdate_ema? Probly not, but CHECK
+    update_ema(ema, model, decay=0)  # ensure ema is initialized with synced weights
+    model.train()  # this enables embedding dropout for classifier-free guidance
+    ema.eval()  # ema model should always be in eval mode
 
     # Variables for monitoring/logging purposes:
     train_steps = 0
@@ -161,34 +163,45 @@ def main(args):
         # reshape batch
         samples = patchify(samples)
 
+        # TODO: check if need to downcast t
         t = torch.randint(0, diffusion.num_timesteps, (samples.shape[0],), device=device)
         model_kwargs = dict(y=targets)
-        loss_dict = diffusion.training_losses(model, samples, t, model_kwargs)
+
+        # FIXME: inconsistent use of 'cuda' & device 
+        with torch.amp.autocast('cuda'):
+            loss_dict = diffusion.training_losses(model, samples, t, model_kwargs)
+        
         loss = loss_dict["loss"].mean()
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
+
         opt.zero_grad()
-        loss.backward()
-        opt.step()
+        # TODO: do I need to wrap epdate_ema? Probly not, but CHECK
         update_ema(ema, model)
 
         # Log loss values:
         running_loss += loss.item()
         log_steps += 1
         train_steps += 1
+
         if train_steps % args.log_every == 0:
-            # Measure training speed:
+            # measure training speed
             torch.cuda.synchronize()
             end_time = time()
             steps_per_sec = log_steps / (end_time - start_time)
-            # Reduce loss history over all processes:
+            
+            # reduce loss history over all processes
             avg_loss = torch.tensor(running_loss / log_steps, device=device)
             avg_loss = avg_loss.item()
             logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
-            # Reset monitoring variables:
+            
+            # reset monitoring variables
             running_loss = 0
             log_steps = 0
             start_time = time()
 
-        # Save DiT checkpoint:
+        # save DiT checkpoint:
         if train_steps % args.ckpt_every == 0 and train_steps > 0:
             checkpoint = {
                 "model": model.module.state_dict(),
