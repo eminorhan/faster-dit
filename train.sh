@@ -2,10 +2,10 @@
 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128GB
-#SBATCH --time=00:10:00
+#SBATCH --time=00:05:00
 #SBATCH --job-name=train_dit
 #SBATCH --output=train_dit_%A_%a.out
 #SBATCH --array=1
