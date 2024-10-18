@@ -151,6 +151,7 @@ def main(args):
     
     # infinite stream of training data
     for epoch in range(args.epochs):
+        logger.info(f"Starting epoch {epoch} ...")
         for samples, targets in enumerate(loader):
             # move to gpu
             samples = samples.to(device, non_blocking=True)
