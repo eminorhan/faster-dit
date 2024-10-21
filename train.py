@@ -25,6 +25,7 @@ from models import DiT_models
 from diffusion import create_diffusion
 from utils import init_distributed_mode
 from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 #################################################################################
 #                             Training Helper Functions                         #
@@ -121,13 +122,25 @@ def main(args):
 
     # note that parameter initialization is done within the DiT constructor
     model = model.to(device)
-    ema = deepcopy(model).to(device)  # create an EMA of the model for use after training
+    model_without_ddp = model
+    logger.info(f"Model: {model_without_ddp}")
+
+    # optionally compile model
+    if args.compile:
+        model = torch.compile(model)
+    logger.info(f"Model: {model_without_ddp}")
+    
+    # TODO: do I need to compile ema too?    
+    ema = deepcopy(model_without_ddp).to(device)  # create an EMA of the model for use after training
     requires_grad(ema, False)
+
+    model = DDP(model, device_ids=[args.gpu])  # TODO: try FSDP
+    print(f"Model: {model_without_ddp}")
+    print(f"Number of params (M): {(sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad) / 1.e6)}")
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
-    logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # set up optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper, add scheduler?)
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0, fused=True)
+    opt = torch.optim.AdamW(model_without_ddp.parameters(), lr=1e-4, weight_decay=0, fused=True)
     scaler = torch.amp.GradScaler('cuda')
 
     # set up data
@@ -138,8 +151,8 @@ def main(args):
     logger.info(f"Dataset contains {len(dataset):,} images ({args.train_data_path})")
 
     # prepare models for training
-    # TODO: do I need to wrap epdate_ema? Probly not, but CHECK
-    update_ema(ema, model, decay=0)  # ensure ema is initialized with synced weights
+    # TODO: do I need to wrap update_ema? Probly not, but CHECK
+    update_ema(ema, model_without_ddp, decay=0)  # ensure ema is initialized with synced weights
     model.train()  # this enables embedding dropout for classifier-free guidance
     ema.eval()  # ema model should always be in eval mode
 
@@ -175,7 +188,7 @@ def main(args):
 
             opt.zero_grad()
             # TODO: do I need to wrap epdate_ema? Probly not, but CHECK
-            update_ema(ema, model)
+            update_ema(ema, model_without_ddp)
 
             # Log loss values:
             running_loss += loss.item()
@@ -201,7 +214,7 @@ def main(args):
             # save DiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
                 checkpoint = {
-                    "model": model.module.state_dict(),
+                    "model": model_without_ddp.state_dict(),
                     "ema": ema.state_dict(),
                     "opt": opt.state_dict(),
                     "args": args
@@ -228,5 +241,6 @@ if __name__ == "__main__":
     parser.add_argument('--device', default='cuda', help='device to use for training/testing')
     parser.add_argument("--log_every", type=int, default=100)
     parser.add_argument("--ckpt_every", type=int, default=50000)
+    parser.add_argument('--compile', action='store_true', help='Whether to compile the model for improved efficiency (default: false)')    
     args = parser.parse_args()
     main(args)
