@@ -11,9 +11,7 @@ import torch
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
-import numpy as np
 from collections import OrderedDict
-from PIL import Image
 from copy import deepcopy
 from glob import glob
 from time import time
@@ -57,31 +55,18 @@ def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[\033[34m%(asctime)s\033[0m] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
-    )
-    logger = logging.getLogger(__name__)
+    if torch.distributed.get_rank() == 0:  # only log on master
+        logging.basicConfig(
+            level=logging.INFO,
+            format='[\033[34m%(asctime)s\033[0m] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
+        )
+        logger = logging.getLogger(__name__)
+    else:  # dummy logger (does nothing)
+        logger = logging.getLogger(__name__)
+        logger.addHandler(logging.NullHandler())
     return logger
-
-
-def center_crop_arr(pil_image, image_size):
-    """
-    Center cropping implementation from ADM.
-    https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
-    """
-    while min(*pil_image.size) >= 2 * image_size:
-        pil_image = pil_image.resize(tuple(x // 2 for x in pil_image.size), resample=Image.BOX)
-
-    scale = image_size / min(*pil_image.size)
-    pil_image = pil_image.resize(tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC)
-
-    arr = np.array(pil_image)
-    crop_y = (arr.shape[0] - image_size) // 2
-    crop_x = (arr.shape[1] - image_size) // 2
-    return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
 
 def patchify(x):
@@ -102,9 +87,10 @@ def main(args):
     """
     Trains a new DiT model.
     """
-    # init distributed (TODO: device etc probly unnecessary)
+    # init distributed
     init_distributed_mode(args)
-    device = torch.device(args.device)
+    device = torch.distributed.get_rank() % torch.cuda.device_count()
+    torch.cuda.set_device(device)
 
     # set up an experiment folder
     os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
@@ -125,11 +111,6 @@ def main(args):
     model_without_ddp = model
     logger.info(f"Model: {model_without_ddp}")
 
-    # optionally compile model
-    if args.compile:
-        model = torch.compile(model)
-    logger.info(f"Model: {model_without_ddp}")
-    
     # TODO: do I need to compile ema too?    
     ema = deepcopy(model_without_ddp).to(device)  # create an EMA of the model for use after training
     requires_grad(ema, False)
@@ -146,8 +127,20 @@ def main(args):
     # set up data
     train_data = torch.load(args.train_data_path, map_location='cpu')
     dataset = TensorDataset(train_data['latents'], train_data['targets'])
-    sampler = DistributedSampler(dataset, num_replicas=torch.distributed.get_world_size(), rank=torch.distributed.get_rank(), shuffle=True)
-    loader = DataLoader(dataset, sampler=sampler, batch_size=args.batch_size_per_gpu, num_workers=args.num_workers, pin_memory=True, drop_last=True)
+    sampler = DistributedSampler(
+        dataset, 
+        num_replicas=torch.distributed.get_world_size(), 
+        rank=torch.distributed.get_rank(), 
+        shuffle=True,
+        )
+    loader = DataLoader(
+        dataset, 
+        sampler=sampler, 
+        batch_size=args.batch_size_per_gpu, 
+        num_workers=args.num_workers, 
+        pin_memory=True, 
+        drop_last=True
+        )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.train_data_path})")
 
     # prepare models for training
@@ -165,7 +158,7 @@ def main(args):
     # infinite stream of training data
     for epoch in range(args.epochs):
         logger.info(f"Starting epoch {epoch} ...")
-        for samples, targets in enumerate(loader):
+        for _, (samples, targets) in enumerate(loader):
             # move to gpu
             samples = samples.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
@@ -203,7 +196,8 @@ def main(args):
                 
                 # reduce loss history over all processes
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                avg_loss = avg_loss.item()
+                torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
+                avg_loss = avg_loss.item() / torch.distributed.get_world_size()                
                 logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
                 
                 # reset monitoring variables
@@ -213,17 +207,25 @@ def main(args):
 
             # save DiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
-                checkpoint = {
-                    "model": model_without_ddp.state_dict(),
-                    "ema": ema.state_dict(),
-                    "opt": opt.state_dict(),
-                    "args": args
-                }
-                checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
-                torch.save(checkpoint, checkpoint_path)
-                logger.info(f"Saved checkpoint to {checkpoint_path}")
+                if torch.distributed.get_rank() == 0:
+                    checkpoint = {
+                        "model": model_without_ddp.state_dict(),
+                        "ema": ema.state_dict(),
+                        "opt": opt.state_dict(),
+                        "args": args
+                    }
+                    checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
+                    torch.save(checkpoint, checkpoint_path)
+                    logger.info(f"Saved checkpoint to {checkpoint_path}")
+                
+                torch.distributed.barrier()
 
-        # TODO: optionally do sampling/FID calculation etc. with ema (or model) in eval mode
+    # TODO: optionally do sampling/FID calculation etc. with ema (or model) in eval mode
+    model.eval()  # important! This disables randomized embedding dropout
+    # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
+
+    logger.info("Done!")
+    torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -236,11 +238,12 @@ if __name__ == "__main__":
     parser.add_argument("--num_classes", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--batch_size_per_gpu", type=int, default=256)
-    parser.add_argument("--global_seed", type=int, default=0)    
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
-    parser.add_argument('--device', default='cuda', help='device to use for training/testing')
     parser.add_argument("--log_every", type=int, default=100)
     parser.add_argument("--ckpt_every", type=int, default=50000)
-    parser.add_argument('--compile', action='store_true', help='Whether to compile the model for improved efficiency (default: false)')    
+    # distributed training parameters
+    parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
+    parser.add_argument('--num_workers', default=16, type=int)    
+
     args = parser.parse_args()
     main(args)

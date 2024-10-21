@@ -33,7 +33,6 @@ MODEL=${MODELS[$SLURM_ARRAY_TASK_ID]}
 
 srun python -u train.py \
 	--train_data_path "/scratch/projects/lakelab/data_frames/imagenet-1k-processed/tae_patch16_vocab64_px256/imagenet_1k_val_tae_patch16_vocab64_px256.pth" \
-	--model "DiT-S/8" \
-	--compile
+	--model "DiT-S/8"
 
 echo "Done"
