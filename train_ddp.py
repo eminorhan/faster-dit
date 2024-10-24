@@ -21,7 +21,9 @@ import os
 
 from models import DiT_models
 from diffusion import create_diffusion
-from torch.utils.data import TensorDataset, DataLoader
+from utils import init_distributed_mode
+from torch.utils.data import TensorDataset, DataLoader, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 #################################################################################
 #                             Training Helper Functions                         #
@@ -53,13 +55,17 @@ def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format='[\033[34m%(asctime)s\033[0m] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
-    )
-    logger = logging.getLogger(__name__)
+    if torch.distributed.get_rank() == 0:  # only log on master
+        logging.basicConfig(
+            level=logging.INFO,
+            format='[\033[34m%(asctime)s\033[0m] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
+        )
+        logger = logging.getLogger(__name__)
+    else:  # dummy logger (does nothing)
+        logger = logging.getLogger(__name__)
+        logger.addHandler(logging.NullHandler())
     return logger
 
 
@@ -81,8 +87,10 @@ def main(args):
     """
     Trains a new DiT model.
     """
-    assert torch.cuda.is_available(), "Training currently requires at least one GPU."
-    device = torch.device('cuda')
+    # init distributed
+    init_distributed_mode(args)
+    device = torch.distributed.get_rank() % torch.cuda.device_count()
+    torch.cuda.set_device(device)
 
     # set up an experiment folder
     os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
@@ -101,14 +109,13 @@ def main(args):
     # note that parameter initialization is done within the DiT constructor
     model = model.to(device)
     model_without_ddp = model
-
-    if args.compile:
-        model = torch.compile(model)
+    logger.info(f"Model: {model_without_ddp}")
 
     # TODO: do I need to compile ema too?    
     ema = deepcopy(model_without_ddp).to(device)  # create an EMA of the model for use after training
     requires_grad(ema, False)
 
+    model = DDP(model, device_ids=[args.gpu])  # TODO: try FSDP
     print(f"Model: {model_without_ddp}")
     print(f"Number of params (M): {(sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad) / 1.e6)}")
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
@@ -120,13 +127,18 @@ def main(args):
     # set up data
     train_data = torch.load(args.train_data_path, map_location='cpu')
     dataset = TensorDataset(train_data['latents'], train_data['targets'])
+    sampler = DistributedSampler(
+        dataset, 
+        num_replicas=torch.distributed.get_world_size(), 
+        rank=torch.distributed.get_rank(), 
+        shuffle=True,
+        )
     loader = DataLoader(
         dataset, 
-        sampler=None, 
+        sampler=sampler, 
         batch_size=args.batch_size_per_gpu, 
         num_workers=args.num_workers, 
-        shuffle=True,
-        pin_memory=True,
+        pin_memory=True, 
         drop_last=True
         )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.train_data_path})")
@@ -184,6 +196,8 @@ def main(args):
                 
                 # reduce loss history over all processes
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
+                torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
+                avg_loss = avg_loss.item() / torch.distributed.get_world_size()                
                 logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
                 
                 # reset monitoring variables
@@ -193,21 +207,25 @@ def main(args):
 
             # save DiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
-                checkpoint = {
-                    "model": model_without_ddp.state_dict(),
-                    "ema": ema.state_dict(),
-                    "opt": opt.state_dict(),
-                    "args": args
-                }
-                checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
-                torch.save(checkpoint, checkpoint_path)
-                logger.info(f"Saved checkpoint to {checkpoint_path}")
+                if torch.distributed.get_rank() == 0:
+                    checkpoint = {
+                        "model": model_without_ddp.state_dict(),
+                        "ema": ema.state_dict(),
+                        "opt": opt.state_dict(),
+                        "args": args
+                    }
+                    checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
+                    torch.save(checkpoint, checkpoint_path)
+                    logger.info(f"Saved checkpoint to {checkpoint_path}")
+                
+                torch.distributed.barrier()
 
     # TODO: optionally do sampling/FID calculation etc. with ema (or model) in eval mode
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
 
     logger.info("Done!")
+    torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -220,11 +238,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_classes", type=int, default=1000)
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--batch_size_per_gpu", type=int, default=256)
-    parser.add_argument("--tae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
+    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--log_every", type=int, default=100)
     parser.add_argument("--ckpt_every", type=int, default=50000)
-    parser.add_argument('--compile', action='store_true', help='Whether to compile the model for improved efficiency (default: false)')        
     # distributed training parameters
+    parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     parser.add_argument('--num_workers', default=16, type=int)    
 
     args = parser.parse_args()
