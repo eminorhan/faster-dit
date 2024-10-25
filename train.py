@@ -81,6 +81,7 @@ def main(args):
     """
     Trains a new DiT model.
     """
+    print(f"Args: {args}")
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
     device = torch.device('cuda')
 
@@ -95,8 +96,7 @@ def main(args):
     logger.info(f"Experiment directory created at {experiment_dir}")
 
     # create model
-    assert args.image_size % 8 == 0, "Image size must be divisible by 8 for the VAE encoder (latent_size = args.image_size // 8)"
-    model = DiT_models[args.model](num_classes=args.num_classes)
+    model = DiT_models[args.model](num_classes=args.num_classes, in_channels=args.in_channels, num_patches=args.num_patches)
 
     # note that parameter initialization is done within the DiT constructor
     model = model.to(device)
@@ -123,7 +123,7 @@ def main(args):
     loader = DataLoader(
         dataset, 
         sampler=None, 
-        batch_size=args.batch_size_per_gpu, 
+        batch_size=args.batch_size, 
         num_workers=args.num_workers, 
         shuffle=True,
         pin_memory=True,
@@ -215,16 +215,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_data_path', default='', type=str)
     parser.add_argument("--results_dir", type=str, default="results")
-    parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
-    parser.add_argument("--image_size", type=int, choices=[256, 512], default=256)
+    parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT_XL")
     parser.add_argument("--num_classes", type=int, default=1000)
+    parser.add_argument("--in_channels", type=int, default=64)
+    parser.add_argument("--num_patches", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=1400)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--tae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--log_every", type=int, default=100)
     parser.add_argument("--ckpt_every", type=int, default=50000)
     parser.add_argument('--compile', action='store_true', help='Whether to compile the model for improved efficiency (default: false)')        
-    # distributed training parameters
     parser.add_argument('--num_workers', default=16, type=int)    
 
     args = parser.parse_args()
