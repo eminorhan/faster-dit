@@ -85,6 +85,7 @@ def main(args):
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
     device = torch.device('cuda')
 
+    # TODO: clean up this big folder mess
     # set up an experiment folder
     os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
     experiment_index = len(glob(f"{args.results_dir}/*"))
@@ -158,7 +159,6 @@ def main(args):
             t = torch.randint(0, diffusion.num_timesteps, (samples.shape[0],), device=device)
             model_kwargs = dict(y=targets)
 
-            # FIXME: inconsistent use of 'cuda' & device 
             with torch.amp.autocast('cuda'):
                 loss_dict = diffusion.training_losses(model, samples, t, model_kwargs)
             
@@ -219,13 +219,12 @@ if __name__ == "__main__":
     parser.add_argument("--num_classes", type=int, default=1000)
     parser.add_argument("--in_channels", type=int, default=64)
     parser.add_argument("--num_patches", type=int, default=256)
-    parser.add_argument("--epochs", type=int, default=1400)
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--tae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
-    parser.add_argument("--log_every", type=int, default=100)
-    parser.add_argument("--ckpt_every", type=int, default=50000)
-    parser.add_argument('--compile', action='store_true', help='Whether to compile the model for improved efficiency (default: false)')        
-    parser.add_argument('--num_workers', default=16, type=int)    
+    parser.add_argument("--log_every", type=int, default=30000)
+    parser.add_argument("--ckpt_every", type=int, default=90000)
+    parser.add_argument('--num_workers', default=16, type=int)
+    parser.add_argument('--compile', action='store_true', help='whether to compile the model for improved efficiency (default: false)')        
 
     args = parser.parse_args()
     main(args)

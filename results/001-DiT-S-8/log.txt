@@ -1,1 +1,0 @@
-[[34m2024-08-02 16:50:36[0m] Experiment directory created at results/001-DiT-S-8
